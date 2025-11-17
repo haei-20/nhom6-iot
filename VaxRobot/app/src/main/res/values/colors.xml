@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="blackColor">#FF000000</color>
+    <color name="transparentColor">#00FFFFFF</color>
+    <color name="whiteColor">#FFFFFFFF</color>
+    <color name="greenColor">#93E681</color>
+    <color name="redColor">#FD1100</color>
+    <color name="milkColor">   #F6F0F0</color>
+    <color name="sandColor">    #F2E2B1</color>
+    <color name="tealColor">    #A6CDC6</color>
+    <color name="darkTealColor">    #16404D</color>
+    <color name="beigeColor">        #DDA853</color>
+    <color name="lightBeigeColor">#F8CB82</color>
+</resources>
