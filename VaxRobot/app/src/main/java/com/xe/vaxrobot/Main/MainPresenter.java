@@ -16,28 +16,47 @@ import com.xe.vaxrobot.Model.BluetoothModel;
 import com.xe.vaxrobot.Model.RobotModel;
 import com.xe.vaxrobot.Model.SonicValue;
 
+import java.util.ArrayList;
 import java.util.Set;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
 
-// FAKE commit to test git
-
 @Singleton
 public class MainPresenter implements MainContract.Presenter {
 
+    // --- CLASS LƯU HÀNH TRÌNH ---
+    public static class TablePath {
+        public String name;
+        // Lưu danh sách các lệnh theo thời gian (mỗi phần tử tương ứng 50ms)
+        public ArrayList<String> commands;
+
+        public TablePath(String name, ArrayList<String> commands) {
+            this.name = name;
+            // Copy dữ liệu hiện tại sang một list mới để lưu trữ
+            this.commands = new ArrayList<>(commands);
+        }
+    }
+
     private MainActivity view;
     private BluetoothModel model;
-
     private Handler handler;
 
-    private float receivedDistance = 0;
-    private float traveledDistance = 0;
+    // --- BIẾN CHO CHỨC NĂNG GHI & PHÁT LẠI ---
+    // List chứa hành trình đang ghi (Manual Mode)
+    private ArrayList<String> currentRecording = new ArrayList<>();
+
+    // Danh sách các bàn đã lưu
+    private ArrayList<TablePath> savedTables = new ArrayList<>();
+
+    // Biến cho chế độ Auto (Replay)
+    private boolean isAutoMode = false;
+    private ArrayList<String> replaySequence = null; // Chuỗi lệnh cần phát lại
+    private int replayIndex = 0; // Con trỏ vị trí đang phát
+    // -----------------------------------------
 
     private boolean isRoll = false;
-
     private BluetoothAdapter bluetoothAdapter;
-
     private boolean isShowSeekBaGroup = true;
     private boolean isSettingCompass = false;
 
@@ -46,16 +65,7 @@ public class MainPresenter implements MainContract.Presenter {
     boolean isLeft = false;
     boolean isRight = false;
 
-
     private String commandSend = "S";
-    /*  commandSend value meaning:
-                                    F: Forward
-                                    S: Stop
-                                    B: Backward
-                                    L: Left Rotate
-                                    R: Right Rotate
-                                    D: Delete mesage
-         */
 
     @Inject
     public MainPresenter() {
@@ -71,15 +81,11 @@ public class MainPresenter implements MainContract.Presenter {
     @Override
     public void init(){
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        Log.e("BluetoothVax", "Device does not support Bluetooth");
         if (bluetoothAdapter == null) {
-            Log.e("Bluetooth", "Device does not support Bluetooth");
             view.showAlertDialog("Error", "Device does not support Bluetooth");
         } else {
-            // Request to turn bluetooth on
             requestToTurnBluetoothOn();
         }
-        // Init model
         this.model = new BluetoothModel(view, bluetoothAdapter);
     }
 
@@ -93,110 +99,143 @@ public class MainPresenter implements MainContract.Presenter {
         }
     }
 
+    // --- VÒNG LẶP CHÍNH (50ms/lần) ---
     private void loopHandler(){
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                // Send command to robot continuously 1 time for 5 millisecond
-                // Default send S - Stop
+                if (isAutoMode) {
+                    // CHẾ ĐỘ CHẠY: Phát lại lệnh từ bộ nhớ
+                    processReplayControl();
+                } else {
+                    // CHẾ ĐỘ DẠY: Điều khiển tay & Ghi âm lệnh
+                    processManualControl();
 
-                if(isUp){
-                    if(isRight){
-                        commandSend = "FR";
-                        setWhenRoll();
-                    }else if(isLeft){
-                        commandSend = "FL";
-                        setWhenRoll();
-                    }else{
-                        setStopRoll();
-                        commandSend = "F";
-                    }
-                }else if(isDown){
-                    if(isRight){
-                        commandSend = "BR";
-                        setWhenRoll();
-                    }else if(isLeft){
-                        commandSend = "BL";
-                        setWhenRoll();
-                    }else{
-                        setStopRoll();
-                        commandSend = "B";
-                    }
-                }else if(isRight){
-                    setWhenRoll();
-                    if(isUp){
-                        commandSend = "FR";
-                    }else if(isDown){
-                        commandSend = "BR";
-                    }else{
-                        commandSend = "R";
-                    }
-                }else if(isLeft){
-                    setWhenRoll();
-                    if(isUp){
-                        commandSend = "FL";
-                    }else if(isDown){
-                        commandSend = "BL";
-                    }else{
-                        commandSend = "L";
-                    }
-                }else{
-                    commandSend = "S";
+                    // Ghi lại lệnh hiện tại vào bộ nhớ (Record)
+                    // Mỗi 50ms ghi 1 lệnh. 1 giây = 20 lệnh.
+                    currentRecording.add(commandSend);
                 }
 
+                // Gửi lệnh xuống Robot
                 sendCommand(commandSend);
 
                 loopHandler();
             }
-        }, 5);
+        }, 50);
     }
 
-    private void setWhenRoll(){
-        Log.i("FIX_ROLL", "setWhenRoll: " + receivedDistance + " traveled Distance: " + traveledDistance);
-        isRoll = true;
-//        traveledDistance = receivedDistance;
+    // Xử lý phát lại (Replay)
+    private void processReplayControl() {
+        if (replaySequence != null && replayIndex < replaySequence.size()) {
+            // Lấy lệnh tiếp theo trong chuỗi
+            commandSend = replaySequence.get(replayIndex);
+            replayIndex++;
+        } else {
+            // Hết lệnh -> Dừng xe
+            commandSend = "S";
+            isAutoMode = false;
+            view.toastMessage("Đã đến nơi (Kết thúc hành trình)");
+        }
+
+        // An toàn: Nếu gặp vật cản gần khi đang chạy -> Dừng khẩn cấp
+        // (Cần check biến sonicValue nếu muốn tích hợp)
     }
 
-    private void setStopRoll(){
-        Log.i("FIX_ROLL", "setStopRoll: " + receivedDistance + " traveled Distance: " + traveledDistance);
-        isRoll = false;
+    // Xử lý điều khiển tay (Manual)
+    private void processManualControl() {
+        if(isUp){
+            if(isRight){ commandSend = "FR"; }
+            else if(isLeft){ commandSend = "FL"; }
+            else{ commandSend = "F"; }
+        }else if(isDown){
+            if(isRight){ commandSend = "BR"; }
+            else if(isLeft){ commandSend = "BL"; }
+            else{ commandSend = "B"; }
+        }else if(isRight){
+            if(isUp) commandSend = "FR";
+            else if(isDown) commandSend = "BR";
+            else commandSend = "R";
+        }else if(isLeft){
+            if(isUp) commandSend = "FL";
+            else if(isDown) commandSend = "BL";
+            else commandSend = "L";
+        }else{
+            commandSend = "S";
+        }
     }
+
+    // --- CÁC HÀM GIAO TIẾP VỚI UI ---
+
+    // 1. Lưu hành trình hiện tại (Dùng ở chế độ Dạy)
+    public void saveCurrentPosition(String tableName) {
+        // Lưu toàn bộ những gì đã ghi từ lúc Reset đến giờ
+        TablePath path = new TablePath(tableName, currentRecording);
+        savedTables.add(path);
+
+        int stepCount = currentRecording.size();
+        float timeSeconds = stepCount * 0.05f; // 50ms = 0.05s
+        view.toastMessage("Đã lưu: " + tableName + " (" + String.format("%.1f", timeSeconds) + "s)");
+    }
+
+    // 2. Bắt đầu chạy lại hành trình (Dùng ở chế độ Chạy)
+    public void startNavigationTo(int tableIndex) {
+        if (tableIndex >= 0 && tableIndex < savedTables.size()) {
+            // Lấy hành trình đã lưu
+            TablePath target = savedTables.get(tableIndex);
+            replaySequence = target.commands;
+            replayIndex = 0; // Reset về đầu băng
+            isAutoMode = true;
+
+            view.toastMessage("Đang chạy đến " + target.name + "...\nHãy chắc chắn xe đang ở Vạch Xuất Phát!");
+        } else {
+            view.showError("Dữ liệu bàn không hợp lệ!");
+        }
+    }
+
+    // 3. Dừng chạy / Hủy
+    public void stopAutoMode() {
+        isAutoMode = false;
+        commandSend = "S";
+        sendCommand("S");
+    }
+
+    // 4. Reset bộ ghi (Xóa hành trình cũ để dạy lại từ đầu)
+    // Bạn có thể gọi hàm này khi bấm nút "Reset Map" hoặc "Delete"
+    public void resetRecordingData() {
+        currentRecording.clear();
+        view.toastMessage("Đã xóa bộ nhớ tạm. Hãy dạy xe từ Vạch Xuất Phát.");
+        view.resetMap();
+    }
+
+    // Getter cho MainActivity lấy danh sách hiển thị
+    public ArrayList<TablePath> getSavedTables() {
+        return savedTables;
+    }
+
+    // --- CÁC HÀM CŨ (GIỮ NGUYÊN ĐỂ TRÁNH LỖI COMPILER) ---
+
+    private void setWhenRoll(){ isRoll = true; }
+    private void setStopRoll(){ isRoll = false; }
 
     @Override
     public void connectToDevice(String deviceAddress, String name) {
         model.connectToDevice(deviceAddress,
                 new BluetoothModel.ConnectionCallBack() {
                     @Override
-                    public void onSuccess() {
-                        view.showConnectionSuccess(name);
-                    }
-
+                    public void onSuccess() { view.showConnectionSuccess(name); }
                     @Override
-                    public void onFailure(String message) {
-                        view.showConnectionFailed();
-                    }
+                    public void onFailure(String message) { view.showConnectionFailed(); }
                 },
                 new BluetoothModel.MessageCallBack() {
                     @Override
-                    public void onMessageReceived(String message) {
-                        view.showMessage(message);
-                        // parse message
-                        processBluetoothMessage(message);
-                        // update sonic
-
-
-                    }
+                    public void onMessageReceived(String message) { processBluetoothMessage(message); }
                     @Override
-                    public void onError(String message) {
-                        view.showError(message);
-                    }
+                    public void onError(String message) { view.showError(message); }
                 });
     }
 
     @Override
-    public Set<BluetoothDevice> getPairedDevice(){
-        return model.getPairedDevices();
-    }
+    public Set<BluetoothDevice> getPairedDevice(){ return model.getPairedDevices(); }
 
     @Override
     public void sendCommand(String command) {
@@ -205,10 +244,7 @@ public class MainPresenter implements MainContract.Presenter {
     }
 
     @Override
-    public void setCommandSend(String commandSend) {
-        this.commandSend = commandSend;
-        sendCommand(commandSend);
-    }
+    public void setCommandSend(String commandSend) { this.commandSend = commandSend; }
 
     @Override
     public void disconnect() {
@@ -217,108 +253,35 @@ public class MainPresenter implements MainContract.Presenter {
     }
 
     public void processOnStatusClick(){
-        if(model.isConnected()){
-            disconnect();
-        }else{
-            view.startPickDeviceActivity();
-        }
+        if(model.isConnected()){ disconnect(); }
+        else{ view.startPickDeviceActivity(); }
     }
 
-    // TODO:: get Heading.
     private void processBluetoothMessage(String fullMessage) {
+        // Vẫn giữ logic parse để hiển thị Sonic/Map nếu cần
+        // Nhưng không dùng tọa độ để điều khiển nữa
         RobotModel robotModel = new RobotModel();
-        Log.d("fullMess", fullMessage);
-        String[] lines = fullMessage.strip().split("\\R"); // split by line
-        // process distance, yAngle
-        try{
-            String[] speedParts = lines[0].split("; ");
-            double speed = Double.parseDouble(speedParts[0].split(": ")[1]);
-            receivedDistance = (float) Double.parseDouble(speedParts[1].split(": ")[1]);
-            String action = speedParts[2].split(":")[1];
-            robotModel.setAction(action);
-            String[] yprParts = lines[5]
-                    .replace("YPR:", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .split(";");
-            float tempYAngle = Float.parseFloat(yprParts[0].replace("Y:", ""));
-            //double pitch = Double.parseDouble(yprParts[1].replace("P:", ""));
-            //double roll = Double.parseDouble(yprParts[2].replace("R:", ""));
-            // Map yAngle into 0-360 and set to robotModelClone
-            processDistance(mapYAngleInto360(tempYAngle));
-            robotModel.setAngle(mapYAngleInto360(tempYAngle));
-            if(!isRoll){
-                float delta =  (receivedDistance - traveledDistance);
-//                if(delta >= squareSizeCm)
-//                {
+        String[] lines = fullMessage.strip().split("\\R");
 
-                    // TODO:: MERGE INTO setRobotModel only
-//                                robotModelClone.setDistance(delta);
-//                    view.moveRobotCar(delta, commandSend);
-                    robotModel.setDistanceCm(delta);
-//                    Log.d("fix_delta", "delta: " + delta);
-                    traveledDistance = receivedDistance;
-//                }
-
-            }else{
-                traveledDistance = receivedDistance;
-            }
-        }catch (Exception e){
-            Log.e("fix_delta", "parseBluetoothMessage: " + e + e.getMessage());
-        }
-
-        // 3. Sonic
-        try{
+        try {
+            // Parse Sonic để hiển thị hoặc dừng khẩn cấp
             String[] sonicParts = lines[2].replaceAll("[^0-9;]", "").split(";");
             int sonicL = Integer.parseInt(sonicParts[0]);
             int sonicR = Integer.parseInt(sonicParts[1]);
             int sonicF = Integer.parseInt(sonicParts[2]);
-            if (sonicL > 200) sonicL = -1;
-            if (sonicR > 200) sonicR = -1;
-            if (sonicF > 200) sonicF = -1;
-            SonicValue sonicValue = new SonicValue(
-                    sonicL,
-                    sonicR,
-                    sonicF
-            );
-            //Log.i("MapView", "Sonic L/R/F = " + sonicL + "/" + sonicR + "/" + sonicF);
-//            view.processSonicValue(sonicValue);
-            robotModel.setSonicValue(sonicValue);
-        }catch (Exception e){
-            Log.e("fix_delta", "parseBluetoothMessage: " + e);
-        }
 
+            SonicValue sv = new SonicValue(sonicL, sonicR, sonicF);
+            robotModel.setSonicValue(sv);
 
-        // 4. Accelerometer
-        try{
-            String[] accelParts = lines[3].replaceAll("[^X0-9Y:Z\\-; ]", "").split("[; ]+");
-            int accelX = Integer.parseInt(accelParts[2]);
-            int accelY = Integer.parseInt(accelParts[4]);
-            int accelZ = Integer.parseInt(accelParts[6]);
-            Log.i("MapView", "Accel X/Y/Z = " + accelY );
-        }catch(Exception e){
-            Log.e("fix_delta", "processBluetoothMessage: " + e);
-        }
+            // An toàn: Nếu đang Auto Mode mà gặp vật cản < 15cm -> Dừng
+            if (isAutoMode && sonicF > 0 && sonicF < 15) {
+                isAutoMode = false;
+                commandSend = "S";
+                view.showError("Gặp vật cản! Dừng khẩn cấp.");
+            }
+        } catch (Exception e) {}
 
-
-        // 5. Gyroscope
-//        String[] gyroParts = lines[4].replaceAll("[^X0-9Y:Z\\-; ]", "").split("[; ]+");
-//        int gyroX = Integer.parseInt(gyroParts[1]);
-//        int gyroY = Integer.parseInt(gyroParts[3]);
-//        int gyroZ = Integer.parseInt(gyroParts[5]);
-
-        // 6. Yaw-Pitch-Roll
-
-
-//        Log.i("MapView", "Sonic L/R/F = " + sonicL + "/" + sonicR + "/" + sonicF);
-//        Log.i("MapView", "Accel X/Y/Z = " + accelX + "/" + accelY + "/" + accelZ);
-//        Log.i("MapView", "Gyro X/Y/Z = " + gyroX + "/" + gyroY + "/" + gyroZ);
-//        Log.i("MapView", "Temp = " + temp + "°C, Pressure = " + pressure + " Pa");
         view.updateRobotModel(robotModel);
-    }
-
-    private void processDistance(float angle){
-
     }
 
     public void setIsShowSeekBarGroup(boolean isShow){
@@ -326,52 +289,23 @@ public class MainPresenter implements MainContract.Presenter {
         isShowSeekBaGroup = isShow;
     }
 
-    public boolean isSettingCompass() {
-        return isSettingCompass;
-    }
+    public boolean isSettingCompass() { return isSettingCompass; }
 
     public void setSettingCompass(boolean settingCompass) {
         isSettingCompass = settingCompass;
-        if(settingCompass){
-            sendCommand("calculatingCalibration");
-            view.toastMessage("calculatingCalibration");
-            return;
-        }
-        sendCommand("resetCalibration");
-        view.toastMessage("resetCalibration");
+        if(settingCompass) sendCommand("calculatingCalibration");
+        else sendCommand("resetCalibration");
     }
 
-    public boolean isShowSeekBaGroup() {
-        return isShowSeekBaGroup;
-    }
-
-    /*
-     * yAngle input is  |0-->180 -->180  -->360
-     * Map yAngle into  |0-->180 -->-180 -->0
-     */
-    private int mapYAngleInto360(float yAngle){
-        int mapped = (int) yAngle;
-        if(mapped < 0) mapped = 360 + mapped;
-        return mapped;
-    }
+    public boolean isShowSeekBaGroup() { return isShowSeekBaGroup; }
 
     public void resetMap(){
-        view.resetMap();
+        // Khi reset map -> Reset luôn bộ ghi
+        resetRecordingData();
     }
 
-    public void setUp(boolean up) {
-        isUp = up;
-    }
-
-    public void setDown(boolean down) {
-        isDown = down;
-    }
-
-    public void setLeft(boolean left) {
-        isLeft = left;
-    }
-
-    public void setRight(boolean right) {
-        isRight = right;
-    }
+    public void setUp(boolean up) { isUp = up; }
+    public void setDown(boolean down) { isDown = down; }
+    public void setLeft(boolean left) { isLeft = left; }
+    public void setRight(boolean right) { isRight = right; }
 }

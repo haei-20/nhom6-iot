@@ -12,6 +12,8 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.ArrayAdapter;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.SeekBar;
 import android.widget.Toast;
@@ -51,6 +53,9 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
 
     private ArrayList<Pair<String, String>> deviceList = new ArrayList<>();
 
+    // Adapter cho danh sách bàn
+    private ArrayAdapter<String> tableAdapter;
+    private ArrayList<String> tableNames = new ArrayList<>();
 
     @SuppressLint("ClickableViewAccessibility")
     @Override
@@ -86,12 +91,44 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
 
                         presenter.connectToDevice(selected.first, selected.second);
                         Toast.makeText(this, "Name: " + selected.second + " Address: " + selected.first, Toast.LENGTH_SHORT).show();
-                        // Do something with the selected device
                     }
                 }
         );
 
         setUpButton();
+
+        // Cài đặt danh sách bàn (ListView)
+        setupTableList();
+
+        // Mặc định ở chế độ Dạy (Teaching)
+        updateModeUI(false);
+    }
+
+    // --- Cài đặt ListView hiển thị hành trình ---
+    private void setupTableList() {
+        if (binding.tableList != null) {
+            tableAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, tableNames);
+            binding.tableList.setAdapter(tableAdapter);
+
+            // Sự kiện khi click vào tên bàn -> Xe chạy lại hành trình đó
+            binding.tableList.setOnItemClickListener((parent, view, position, id) -> {
+                presenter.startNavigationTo(position);
+            });
+        }
+    }
+
+    // --- [ĐÃ SỬA] Cập nhật danh sách dùng TablePath thay vì TableLocation ---
+    private void refreshTableData() {
+        tableNames.clear();
+        // Sử dụng MainPresenter.TablePath (Logic mới)
+        for (MainPresenter.TablePath path : presenter.getSavedTables()) {
+            // Tính thời gian chạy ước lượng (số lệnh * 0.05s)
+            float duration = path.commands.size() * 0.05f;
+            tableNames.add(path.name + " (" + String.format("%.1f", duration) + "s)");
+        }
+        if (tableAdapter != null) {
+            tableAdapter.notifyDataSetChanged();
+        }
     }
 
     private ArrayList<Pair<String, String>> getPairedDevices() {
@@ -125,17 +162,11 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
             if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
                     checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-
-                if (shouldShowRequestPermissionRationale(android.Manifest.permission.BLUETOOTH_CONNECT)) {
-                    Toast.makeText(this, "Bluetooth permissions are needed to connect to devices.", Toast.LENGTH_LONG).show();
-                }
                 requestPermissions(new String[]{
                         android.Manifest.permission.BLUETOOTH_CONNECT,
                         Manifest.permission.BLUETOOTH_SCAN
                 }, REQUEST_BLUETOOTH_PERMISSIONS);
             }
-        }else{
-            // show dialog bluetooth not support
         }
     }
 
@@ -158,28 +189,43 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
             binding.mapView.centerOnRobotPosition();
         });
 
-
         binding.setting.setOnClickListener( v-> {
             Intent intent = new Intent(this, SettingActivity.class);
             startActivity(intent);
         });
 
-        // Control buttons
+        // --- Xử lý chuyển chế độ Dạy/Chạy ---
+        if (binding.modeSwitch != null) {
+            binding.modeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                // isChecked = true -> Run Mode (Chế độ Chạy)
+                // isChecked = false -> Teaching Mode (Chế độ Dạy)
+                updateModeUI(isChecked);
+                if (!isChecked) {
+                    presenter.stopAutoMode(); // Dừng chạy tự động khi chuyển về Dạy
+                } else {
+                    refreshTableData(); // Cập nhật danh sách bàn khi sang chế độ Chạy
+                }
+            });
+        }
 
+        // --- Xử lý nút Lưu vị trí (chỉ hiện ở chế độ Dạy) ---
+        if (binding.btnSave != null) {
+            binding.btnSave.setOnClickListener(v -> {
+                showSaveTableDialog();
+            });
+        }
+
+        // Control buttons
         binding.up.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View view, MotionEvent motionEvent) {
                 switch (motionEvent.getAction()) {
                     case MotionEvent.ACTION_DOWN:
-                        // Finger touched the button
-//                        presenter.setCommandSend("F");
                         presenter.setUp(true);
                         binding.mapView.centerOnRobotPosition();
                         setOnTouchBackground(binding.up);
                         return true;
                     case MotionEvent.ACTION_UP:
-                        // Finger lifted off the button
-//                        presenter.setCommandSend("S");
                         presenter.setUp(false);
                         binding.mapView.centerOnRobotPosition();
                         setOnNotTouchBackground(binding.up);
@@ -188,77 +234,60 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
                 return false;
             }
         });
-        binding.down.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                switch (motionEvent.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        // Finger touched the button
-//                        presenter.setCommandSend("B");
-                        presenter.setDown(true);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnTouchBackground(binding.down);
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        // Finger lifted off the button
-//                        presenter.setCommandSend("S");
-                        presenter.setDown(false);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnNotTouchBackground(binding.down);
-                        return true;
-                }
-                return false;
+
+        binding.down.setOnTouchListener((view, motionEvent) -> {
+            switch (motionEvent.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    presenter.setDown(true);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnTouchBackground(binding.down);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    presenter.setDown(false);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnNotTouchBackground(binding.down);
+                    return true;
             }
+            return false;
         });
 
-        binding.left.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                switch (motionEvent.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        // Finger touched the button
-//                        presenter.setCommandSend("L");
-                        presenter.setLeft(true);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnTouchBackground(binding.left);
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        // Finger lifted off the button
-//                        presenter.setCommandSend("S");
-                        presenter.setLeft(false);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnNotTouchBackground(binding.left);
-                        return true;
-                }
-                return false;
+        binding.left.setOnTouchListener((view, motionEvent) -> {
+            switch (motionEvent.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    presenter.setLeft(true);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnTouchBackground(binding.left);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    presenter.setLeft(false);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnNotTouchBackground(binding.left);
+                    return true;
             }
+            return false;
         });
 
-        binding.right.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                switch (motionEvent.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        // Finger touched the button
-//                        presenter.setCommandSend("R");
-                        presenter.setRight(true);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnTouchBackground(binding.right);
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        // Finger lifted off the button
-//                        presenter.setCommandSend("S");
-                        presenter.setRight(false);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnNotTouchBackground(binding.right);
-                        return true;
-                }
-                return false;
+        binding.right.setOnTouchListener((view, motionEvent) -> {
+            switch (motionEvent.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    presenter.setRight(true);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnTouchBackground(binding.right);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    presenter.setRight(false);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnNotTouchBackground(binding.right);
+                    return true;
             }
+            return false;
         });
 
+        // Sửa logic nút Delete: Reset bộ ghi hành trình
         binding.delete.setOnClickListener(v -> {
-            presenter.sendCommand("D");
+            // Gọi hàm resetRecordingData thay vì chỉ gửi "D"
+            presenter.resetRecordingData();
+            presenter.sendCommand("D"); // Vẫn gửi lệnh xuống robot để reset encoder nếu cần
         });
 
         binding.seekbar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -266,14 +295,10 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
             public void onProgressChanged(SeekBar seekBar, int i, boolean b) {
                 String res = "Speed " + String.valueOf(i);
                 presenter.sendCommand(res);
-
                 binding.seekbarValue.setText(i + "");
             }
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
         binding.seekbarDelta.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -283,21 +308,16 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
                 presenter.sendCommand(res);
                 binding.seekbarDeltaValue.setText("" +  String.valueOf(i-50));
             }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
         binding.status.setOnClickListener(v -> {
             presenter.processOnStatusClick();
         });
 
-
         binding.buttonMusic.setOnClickListener(v -> {
-           presenter.sendCommand("music");
+            presenter.sendCommand("music");
         });
 
         binding.measure.setOnClickListener(v -> {
@@ -308,6 +328,56 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
                 binding.measure.setAlpha(0.5f);
             }
         });
+    }
+
+    // --- Hàm hiển thị Dialog lưu hành trình ---
+    private void showSaveTableDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Lưu hành trình vừa đi");
+        builder.setMessage("Đặt tên (VD: Bàn 1). Hãy chắc chắn bạn đã lái xe từ điểm xuất phát đến đây.");
+
+        final EditText input = new EditText(this);
+        builder.setView(input);
+
+        builder.setPositiveButton("Lưu", (dialog, which) -> {
+            String name = input.getText().toString();
+            if (!name.isEmpty()) {
+                presenter.saveCurrentPosition(name);
+                refreshTableData();
+            } else {
+                toastMessage("Tên không được để trống");
+            }
+        });
+        builder.setNegativeButton("Hủy", (dialog, which) -> dialog.cancel());
+
+        builder.show();
+    }
+
+    // --- Hàm ẩn hiện UI theo chế độ ---
+    private void updateModeUI(boolean isRunMode) {
+        if (isRunMode) {
+            // Chế độ CHẠY: Ẩn nút điều khiển, Hiện list bàn
+            binding.up.setVisibility(View.GONE);
+            binding.down.setVisibility(View.GONE);
+            binding.left.setVisibility(View.GONE);
+            binding.right.setVisibility(View.GONE);
+            if(binding.btnSave != null) binding.btnSave.setVisibility(View.GONE);
+
+            if(binding.tableList != null) binding.tableList.setVisibility(View.VISIBLE);
+
+            toastMessage("Chuyển sang chế độ CHẠY (Auto)");
+        } else {
+            // Chế độ DẠY: Hiện nút điều khiển, Ẩn list bàn
+            binding.up.setVisibility(View.VISIBLE);
+            binding.down.setVisibility(View.VISIBLE);
+            binding.left.setVisibility(View.VISIBLE);
+            binding.right.setVisibility(View.VISIBLE);
+            if(binding.btnSave != null) binding.btnSave.setVisibility(View.VISIBLE);
+
+            if(binding.tableList != null) binding.tableList.setVisibility(View.GONE);
+
+            toastMessage("Chuyển sang chế độ DẠY (Manual)");
+        }
     }
 
     public void startPickDeviceActivity(){
@@ -321,7 +391,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         devicePickerLauncher.launch(intent);
     }
 
-    // Optional: handle result from enable request
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -335,17 +404,10 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         }
     }
 
-
-
-//
-//    Implementation of View
-//    Include show message, show error, show alert dialog
-//
     @Override
     public void showConnectionSuccess(String device) {
         binding.status.setImageResource(R.drawable.baseline_bluetooth_connected_24);
         binding.status.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.greenColor));
-
         Toast.makeText(this, "Connected", Toast.LENGTH_SHORT).show();
     }
 
@@ -353,7 +415,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     public void showConnectionFailed() {
         binding.status.setImageResource(R.drawable.baseline_bluetooth_disabled_24);
         binding.status.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.redColor));
-
         Toast.makeText(this, "Connection Failed", Toast.LENGTH_SHORT).show();
     }
 
@@ -361,7 +422,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     public void showDisconnected(){
         binding.status.setImageResource(R.drawable.baseline_do_not_disturb_24);
         binding.status.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.greenColor));
-
         Toast.makeText(this, "Disconnected", Toast.LENGTH_SHORT).show();
     }
 
@@ -375,15 +435,12 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         binding.messages.setText("Error: " + error);
     }
 
-
     @Override
     public void showAlertDialog(String title, String message ){
         AlertDialog alertDialog = new AlertDialog.Builder(getApplicationContext())
                 .setTitle(title)
                 .setMessage(message)
-                .setPositiveButton("OK", (dialog, which) -> {
-                    dialog.dismiss();
-                })
+                .setPositiveButton("OK", (dialog, which) -> dialog.dismiss())
                 .create();
         alertDialog.show();
     }
@@ -396,7 +453,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         img.setBackgroundColor(getResources().getColor(R.color.transparentColor));
     }
 
-
     public void setVisibleSeekBarGroup(boolean isShow){
         binding.seekbarGroup.setVisibility(isShow ? View.VISIBLE : View.GONE);
     }
@@ -405,34 +461,17 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         Toast.makeText(this, mess, Toast.LENGTH_SHORT).show();
     }
 
+    public void moveRobotCar(float distanceCm,  String action){}
 
-    //
-    //      Interact with Robot model / mapview
-    //
+    public void setRobotAngle(float angle){}
 
-//    public void setRawRobotModel(RobotModel r){
-//        binding.mapView.setRawRobotModel(r);
-//    }
-
-    public void moveRobotCar(float distanceCm,  String action){
-        //binding.mapView.moveRobotCar(distanceCm, action);
-    }
-
-    public void setRobotAngle(float angle){
-        //binding.mapView.setRobotAngle(angle);
-    }
-
-    public void processSonicValue(SonicValue sonicValue){
-        //binding.mapView.processSonicValue(sonicValue);
-    }
+    public void processSonicValue(SonicValue sonicValue){}
 
     public void updateRobotModel(RobotModel r){
         binding.mapView.updateRobotModel(r);
     }
 
-
     public void resetMap(){
         binding.mapView.resetMap();
     }
-
 }
