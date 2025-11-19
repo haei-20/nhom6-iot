@@ -11,4 +11,8 @@
     <color name="darkTealColor">    #16404D</color>
     <color name="beigeColor">        #DDA853</color>
     <color name="lightBeigeColor">#F8CB82</color>
+
+
+    <color name="white">#FFFFFFFF</color>
+    <color name="teal_700">#018786</color>
 </resources>
