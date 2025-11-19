@@ -66,6 +66,7 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         // Inflate using Data Binding
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
+
         // Hide status bar
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             getWindow().setDecorFitsSystemWindows(false);
@@ -74,6 +75,7 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
             getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                     WindowManager.LayoutParams.FLAG_FULLSCREEN);
         }
+
         // Khởi tạo presenter
         presenter.setView(this);
 
@@ -117,14 +119,12 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         }
     }
 
-    // --- [ĐÃ SỬA] Cập nhật danh sách dùng TablePath thay vì TableLocation ---
+    // --- Cập nhật danh sách dùng TablePath ---
     private void refreshTableData() {
         tableNames.clear();
-        // Sử dụng MainPresenter.TablePath (Logic mới)
         for (MainPresenter.TablePath path : presenter.getSavedTables()) {
-            // Tính thời gian chạy ước lượng (số lệnh * 0.05s)
             float duration = path.commands.size() * 0.05f;
-            tableNames.add(path.name + " (" + String.format("%.1f", duration) + "s)");
+            tableNames.add(path.name + " (" + String.format("%.1f", duration) + "s, " + path.commands.size() + " lệnh)");
         }
         if (tableAdapter != null) {
             tableAdapter.notifyDataSetChanged();
@@ -159,7 +159,7 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     }
 
     private void requestBluetoothPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
                     checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{
@@ -182,7 +182,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         }
     }
 
-
     @SuppressLint("ClickableViewAccessibility")
     private void setUpButton(){
         binding.center.setOnClickListener(v -> {
@@ -197,18 +196,16 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         // --- Xử lý chuyển chế độ Dạy/Chạy ---
         if (binding.modeSwitch != null) {
             binding.modeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                // isChecked = true -> Run Mode (Chế độ Chạy)
-                // isChecked = false -> Teaching Mode (Chế độ Dạy)
                 updateModeUI(isChecked);
                 if (!isChecked) {
-                    presenter.stopAutoMode(); // Dừng chạy tự động khi chuyển về Dạy
+                    presenter.stopAutoMode();
                 } else {
-                    refreshTableData(); // Cập nhật danh sách bàn khi sang chế độ Chạy
+                    refreshTableData();
                 }
             });
         }
 
-        // --- Xử lý nút Lưu vị trí (chỉ hiện ở chế độ Dạy) ---
+        // --- Xử lý nút Lưu vị trí ---
         if (binding.btnSave != null) {
             binding.btnSave.setOnClickListener(v -> {
                 showSaveTableDialog();
@@ -216,23 +213,20 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         }
 
         // Control buttons
-        binding.up.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent motionEvent) {
-                switch (motionEvent.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        presenter.setUp(true);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnTouchBackground(binding.up);
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        presenter.setUp(false);
-                        binding.mapView.centerOnRobotPosition();
-                        setOnNotTouchBackground(binding.up);
-                        return true;
-                }
-                return false;
+        binding.up.setOnTouchListener((view, motionEvent) -> {
+            switch (motionEvent.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    presenter.setUp(true);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnTouchBackground(binding.up);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    presenter.setUp(false);
+                    binding.mapView.centerOnRobotPosition();
+                    setOnNotTouchBackground(binding.up);
+                    return true;
             }
+            return false;
         });
 
         binding.down.setOnTouchListener((view, motionEvent) -> {
@@ -283,11 +277,19 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
             return false;
         });
 
-        // Sửa logic nút Delete: Reset bộ ghi hành trình
+        // ✅ SỬA NÚT DELETE: Hiện dialog xác nhận
         binding.delete.setOnClickListener(v -> {
-            // Gọi hàm resetRecordingData thay vì chỉ gửi "D"
-            presenter.resetRecordingData();
-            presenter.sendCommand("D"); // Vẫn gửi lệnh xuống robot để reset encoder nếu cần
+            new AlertDialog.Builder(this)
+                    .setTitle("Xóa hành trình?")
+                    .setMessage("Bạn có muốn:\n• Chỉ xóa dữ liệu ghi\n• HOẶC reset về vị trí gốc (0,0)?")
+                    .setPositiveButton("Xóa dữ liệu", (dialog, which) -> {
+                        presenter.resetRecordingData();
+                    })
+                    .setNegativeButton("Reset về gốc", (dialog, which) -> {
+                        presenter.resetMap();
+                    })
+                    .setNeutralButton("Hủy", null)
+                    .show();
         });
 
         binding.seekbar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -332,15 +334,25 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
 
     // --- Hàm hiển thị Dialog lưu hành trình ---
     private void showSaveTableDialog() {
+        // ✅ Lấy số lệnh hiện tại
+        int commandCount = presenter.getCurrentRecordingSize();
+
+        if (commandCount == 0) {
+            Toast.makeText(this, "Chưa có hành trình nào! Hãy lái xe trước.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Lưu hành trình vừa đi");
-        builder.setMessage("Đặt tên (VD: Bàn 1). Hãy chắc chắn bạn đã lái xe từ điểm xuất phát đến đây.");
+        builder.setMessage("Đặt tên (VD: Bàn 1).\nĐã ghi được " + commandCount + " lệnh (~" +
+                String.format("%.1f", commandCount * 0.05f) + "s)");
 
         final EditText input = new EditText(this);
+        input.setHint("Nhập tên bàn...");
         builder.setView(input);
 
         builder.setPositiveButton("Lưu", (dialog, which) -> {
-            String name = input.getText().toString();
+            String name = input.getText().toString().trim();
             if (!name.isEmpty()) {
                 presenter.saveCurrentPosition(name);
                 refreshTableData();
@@ -356,27 +368,29 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     // --- Hàm ẩn hiện UI theo chế độ ---
     private void updateModeUI(boolean isRunMode) {
         if (isRunMode) {
-            // Chế độ CHẠY: Ẩn nút điều khiển, Hiện list bàn
+            // Chế độ CHẠY
             binding.up.setVisibility(View.GONE);
             binding.down.setVisibility(View.GONE);
             binding.left.setVisibility(View.GONE);
             binding.right.setVisibility(View.GONE);
             if(binding.btnSave != null) binding.btnSave.setVisibility(View.GONE);
+            if(binding.delete != null) binding.delete.setVisibility(View.GONE); // ✅ Ẩn Delete
 
             if(binding.tableList != null) binding.tableList.setVisibility(View.VISIBLE);
 
-            toastMessage("Chuyển sang chế độ CHẠY (Auto)");
+            toastMessage("Chế độ CHẠY (Auto) - Chọn bàn để xe chạy");
         } else {
-            // Chế độ DẠY: Hiện nút điều khiển, Ẩn list bàn
+            // Chế độ DẠY
             binding.up.setVisibility(View.VISIBLE);
             binding.down.setVisibility(View.VISIBLE);
             binding.left.setVisibility(View.VISIBLE);
             binding.right.setVisibility(View.VISIBLE);
             if(binding.btnSave != null) binding.btnSave.setVisibility(View.VISIBLE);
+            if(binding.delete != null) binding.delete.setVisibility(View.VISIBLE); // ✅ Hiện Delete
 
             if(binding.tableList != null) binding.tableList.setVisibility(View.GONE);
 
-            toastMessage("Chuyển sang chế độ DẠY (Manual)");
+            toastMessage("Chế độ DẠY (Manual) - Lái xe rồi nhấn Lưu");
         }
     }
 
@@ -437,7 +451,7 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
 
     @Override
     public void showAlertDialog(String title, String message ){
-        AlertDialog alertDialog = new AlertDialog.Builder(getApplicationContext())
+        AlertDialog alertDialog = new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
                 .setPositiveButton("OK", (dialog, which) -> dialog.dismiss())
@@ -461,11 +475,18 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         Toast.makeText(this, mess, Toast.LENGTH_SHORT).show();
     }
 
-    public void moveRobotCar(float distanceCm,  String action){}
+    // ✅ IMPLEMENT CÁC HÀM TRONG CONTRACT (tránh crash)
+    public void moveRobotCar(float distanceCm, String action){
+        // Không cần dùng trong logic hiện tại
+    }
 
-    public void setRobotAngle(float angle){}
+    public void setRobotAngle(float angle){
+        // Không cần dùng trong logic hiện tại
+    }
 
-    public void processSonicValue(SonicValue sonicValue){}
+    public void processSonicValue(SonicValue sonicValue){
+        // Không cần dùng trong logic hiện tại
+    }
 
     public void updateRobotModel(RobotModel r){
         binding.mapView.updateRobotModel(r);
