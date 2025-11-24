@@ -17,7 +17,6 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -34,7 +33,6 @@ import androidx.core.content.ContextCompat;
 import com.xe.vaxrobot.DevicePicking.PickDeviceActivity;
 import com.xe.vaxrobot.Model.MarkerModel;
 import com.xe.vaxrobot.Model.RobotModel;
-import com.xe.vaxrobot.Model.SonicValue;
 import com.xe.vaxrobot.R;
 import com.xe.vaxrobot.Setting.SettingActivity;
 import com.xe.vaxrobot.databinding.ActivityMainBinding;
@@ -102,7 +100,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         btnSelectRoute.setBackgroundColor(ContextCompat.getColor(this, R.color.teal_700));
         btnSelectRoute.setTextColor(ContextCompat.getColor(this, R.color.white));
 
-        // Thêm vào layout chứa (tùy chỉnh lại theo XML thực tế của bạn)
         if (binding.leftRight != null) binding.leftRight.addView(btnSelectRoute, 0);
 
         btnSelectRoute.setOnClickListener(v -> showRouteSelectionDialog());
@@ -161,6 +158,60 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         builder.show();
     }
 
+    // --- [LOGIC MỚI] MENU DELETE ---
+    private void showDeleteOptions() {
+        String[] options = {"Đặt lại vị trí xe (Reset)", "Xóa một điểm đã lưu"};
+        new AlertDialog.Builder(this)
+                .setTitle("Quản lý Bản đồ")
+                .setItems(options, (dialog, which) -> {
+                    if (which == 0) showResetDialog();
+                    else showDeleteLocationDialog();
+                })
+                .show();
+    }
+
+    private void showResetDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Đặt lại vị trí gốc");
+        builder.setMessage("Xe đang ở đâu? (Tọa độ sẽ về 0,0)");
+
+        final EditText input = new EditText(this);
+        input.setHint("Nhập tên (VD: Bếp, Cửa...)");
+        builder.setView(input);
+
+        builder.setPositiveButton("Xác nhận", (dialog, which) -> {
+            String name = input.getText().toString().trim();
+            if (name.isEmpty()) toastMessage("Vui lòng nhập tên vị trí!");
+            else presenter.resetMap(name);
+        });
+        builder.setNegativeButton("Hủy", null);
+        builder.show();
+    }
+
+    private void showDeleteLocationDialog() {
+        ArrayList<String> markerNames = presenter.getSavedMarkerNames();
+        if (markerNames.isEmpty()) {
+            toastMessage("Chưa có điểm nào được lưu!");
+            return;
+        }
+        String[] namesArray = markerNames.toArray(new String[0]);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Chọn điểm cần xóa")
+                .setItems(namesArray, (dialog, which) -> {
+                    String selectedName = namesArray[which];
+                    new AlertDialog.Builder(this)
+                            .setTitle("Xác nhận xóa")
+                            .setMessage("Xóa '" + selectedName + "' và các đường đi liên quan?")
+                            .setPositiveButton("Xóa", (d, w) -> presenter.deleteLocation(selectedName))
+                            .setNegativeButton("Hủy", null)
+                            .show();
+                })
+                .setNegativeButton("Đóng", null)
+                .show();
+    }
+    // ------------------------------
+
     private void updateModeUI(boolean isRunMode) {
         if (isRunMode) {
             binding.up.setVisibility(View.GONE);
@@ -198,13 +249,10 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         binding.down.setOnTouchListener((v, e) -> { if(e.getAction()==MotionEvent.ACTION_DOWN) presenter.setDown(true); else if(e.getAction()==MotionEvent.ACTION_UP) presenter.setDown(false); return true; });
         binding.left.setOnTouchListener((v, e) -> { if(e.getAction()==MotionEvent.ACTION_DOWN) presenter.setLeft(true); else if(e.getAction()==MotionEvent.ACTION_UP) presenter.setLeft(false); return true; });
         binding.right.setOnTouchListener((v, e) -> { if(e.getAction()==MotionEvent.ACTION_DOWN) presenter.setRight(true); else if(e.getAction()==MotionEvent.ACTION_UP) presenter.setRight(false); return true; });
-        binding.delete.setOnClickListener(v -> {
-            new AlertDialog.Builder(this)
-                    .setTitle("Reset về Bếp?")
-                    .setMessage("Hành động này sẽ đưa xe về tọa độ (0,0) trên bản đồ.")
-                    .setPositiveButton("Đồng ý", (d, w) -> presenter.resetToKitchen())
-                    .setNegativeButton("Hủy", null).show();
-        });
+
+        // [SỬA] Nút Delete giờ gọi Menu tùy chọn
+        binding.delete.setOnClickListener(v -> showDeleteOptions());
+
         binding.status.setOnClickListener(v -> presenter.processOnStatusClick());
         binding.measure.setOnClickListener(v -> binding.mapView.setCalculatingMode(!binding.mapView.isCalculatingMode()));
     }
@@ -214,7 +262,6 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
         binding.mapView.setMarkers(markers);
     }
 
-    // ... Các hàm Bluetooth và Override khác giữ nguyên từ code trước
     private void requestBluetoothPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -251,6 +298,4 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     public void resetMap(){ binding.mapView.resetMap(); }
     public void setVisibleSeekBarGroup(boolean isShow){ binding.seekbarGroup.setVisibility(isShow ? View.VISIBLE : View.GONE); }
     public void toastMessage(String mess){ Toast.makeText(this, mess, Toast.LENGTH_SHORT).show(); }
-    private void setOnTouchBackground(ImageView img){ img.setBackgroundColor(getResources().getColor(R.color.lightBeigeColor)); }
-    private void setOnNotTouchBackground(ImageView img){ img.setBackgroundColor(getResources().getColor(R.color.transparentColor)); }
 }

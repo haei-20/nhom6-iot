@@ -1,6 +1,6 @@
 package com.xe.vaxrobot.Main;
 
-import android.Manifest; // [SỬA LỖI 1] Thêm dòng này
+import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
@@ -55,7 +55,7 @@ public class MainPresenter implements MainContract.Presenter {
     private ArrayList<String> currentRecording = new ArrayList<>();
     private ArrayList<RoutePath> savedRoutes = new ArrayList<>();
     private HashMap<String, MarkerModel> savedMarkers = new HashMap<>();
-    private String currentStartPoint = "Bếp";
+    private String currentStartPoint = "Điểm xuất phát";
 
     // Biến Auto Mode
     private boolean isAutoMode = false;
@@ -66,16 +66,17 @@ public class MainPresenter implements MainContract.Presenter {
     private boolean isRoll = false;
     private BluetoothAdapter bluetoothAdapter;
     private boolean isSettingCompass = false;
-
-    // [SỬA LỖI 2] Thêm khai báo biến này
     private boolean isShowSeekBaGroup = true;
 
-    // Biến đo đạc
+    // Biến đo đạc & Cảm biến
     private float receivedDistance = 0;
     private float traveledDistance = 0;
     private float currentX = 0f;
     private float currentY = 0f;
     private float currentAngleDeg = 0f;
+
+    // Biến lưu khoảng cách phía trước (Mặc định 999 là an toàn)
+    private int currentSonicFront = 999;
 
     boolean isUp = false, isDown = false, isLeft = false, isRight = false;
     private String commandSend = "S";
@@ -101,31 +102,42 @@ public class MainPresenter implements MainContract.Presenter {
         }
     }
 
-    // ... (Giữ nguyên các hàm loopHandler, processAutoRun, startNavigation, findPathBFS...)
-    // ... (Bạn có thể copy lại các hàm đó từ code trước nếu cần, hoặc chỉ cần thêm 2 dòng trên là đủ)
-
-    // Dưới đây là phần code đầy đủ cho các hàm còn lại để bạn tiện copy đè lên:
-
+    // [LOGIC ĐIỀU KHIỂN CHÍNH]
     private void loopHandler(){
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (isAutoMode) {
-                    processAutoRun();
-                } else {
-                    processManualControl();
-                    if (!commandSend.equals("S")) {
-                        currentRecording.add(commandSend);
-                        lastCommandSend = commandSend;
-                    } else if (!lastCommandSend.equals("S")) {
-                        currentRecording.add("S");
-                        lastCommandSend = "S";
+                if (model != null && model.isConnected()) {
+                    if (isAutoMode) {
+                        // [SỬA] Logic tạm dừng khi gặp vật cản
+                        boolean isBlocked = (currentSonicFront > 0 && currentSonicFront < 15);
+
+                        if (isBlocked) {
+                            // Nếu có vật cản: Gửi lệnh dừng, KHÔNG tăng replayIndex
+                            commandSend = "S";
+                            view.toastMessage("Vật cản! Đang chờ...");
+                        } else {
+                            // Nếu hết vật cản: Tiếp tục chạy lệnh tiếp theo
+                            processAutoRun();
+                        }
+                    } else {
+                        processManualControl();
+                        // Logic ghi lại hành trình (Record)
+                        if (!commandSend.equals("S")) {
+                            currentRecording.add(commandSend);
+                            lastCommandSend = commandSend;
+                        } else if (!lastCommandSend.equals("S")) {
+                            currentRecording.add("S");
+                            lastCommandSend = "S";
+                        }
                     }
+                    // Gửi lệnh xuống xe
+                    sendCommand(commandSend);
                 }
-                sendCommand(commandSend);
+
                 loopHandler();
             }
-        }, 50);
+        }, 100);
     }
 
     private void processAutoRun() {
@@ -217,20 +229,46 @@ public class MainPresenter implements MainContract.Presenter {
         lastCommandSend = "S";
     }
 
-    public void resetToKitchen() {
+    @Override
+    public void resetMap(String newStartPointName) {
         currentRecording.clear();
         lastCommandSend = "S";
-        currentStartPoint = "Bếp";
-        this.currentX = 0; this.currentY = 0; this.traveledDistance = 0;
+        this.currentStartPoint = newStartPointName;
+        this.currentX = 0;
+        this.currentY = 0;
+        this.traveledDistance = 0;
         view.resetMap();
-        view.toastMessage("Đã reset về Bếp (0,0)");
+        view.toastMessage("Đã reset tọa độ tại: " + newStartPointName);
+    }
+
+    @Override
+    public void deleteLocation(String name) {
+        if (savedMarkers.containsKey(name)) {
+            savedMarkers.remove(name);
+            ArrayList<RoutePath> routesToRemove = new ArrayList<>();
+            for (RoutePath route : savedRoutes) {
+                if (route.startPoint.equals(name) || route.endPoint.equals(name)) {
+                    routesToRemove.add(route);
+                }
+            }
+            savedRoutes.removeAll(routesToRemove);
+            view.updateMapMarkers(new ArrayList<>(savedMarkers.values()));
+            view.toastMessage("Đã xóa: " + name);
+        } else {
+            view.showError("Không tìm thấy điểm: " + name);
+        }
+    }
+
+    @Override
+    public ArrayList<String> getSavedMarkerNames() {
+        return new ArrayList<>(savedMarkers.keySet());
     }
 
     public String getCurrentStartPoint() { return currentStartPoint; }
 
     public ArrayList<String> getAvailablePoints() {
         ArrayList<String> points = new ArrayList<>();
-        if(!points.contains("Bếp")) points.add("Bếp");
+        if(!points.contains(currentStartPoint)) points.add(currentStartPoint);
         for (RoutePath r : savedRoutes) {
             if (!points.contains(r.startPoint)) points.add(r.startPoint);
             if (!points.contains(r.endPoint)) points.add(r.endPoint);
@@ -245,20 +283,31 @@ public class MainPresenter implements MainContract.Presenter {
     }
 
     private void processManualControl() {
+        boolean isFrontBlocked = (currentSonicFront > 0 && currentSonicFront < 15);
+
         if(isUp){
-            if(isRight){ commandSend = "FR"; setWhenRoll(); }
-            else if(isLeft){ commandSend = "FL"; setWhenRoll(); }
-            else{ setStopRoll(); commandSend = "F"; }
+            if (isFrontBlocked) {
+                commandSend = "S";
+                view.showError("Vật cản! Không thể đi tiếp.");
+            } else {
+                if(isRight){ commandSend = "FR"; setWhenRoll(); }
+                else if(isLeft){ commandSend = "FL"; setWhenRoll(); }
+                else{ setStopRoll(); commandSend = "F"; }
+            }
         }else if(isDown){
             if(isRight){ commandSend = "BR"; setWhenRoll(); }
             else if(isLeft){ commandSend = "BL"; setWhenRoll(); }
             else{ setStopRoll(); commandSend = "B"; }
         }else if(isRight){
             setWhenRoll();
-            if(isUp) commandSend = "FR"; else if(isDown) commandSend = "BR"; else commandSend = "R";
+            if(isUp && !isFrontBlocked) commandSend = "FR";
+            else if(isDown) commandSend = "BR";
+            else commandSend = "R";
         }else if(isLeft){
             setWhenRoll();
-            if(isUp) commandSend = "FL"; else if(isDown) commandSend = "BL"; else commandSend = "L";
+            if(isUp && !isFrontBlocked) commandSend = "FL";
+            else if(isDown) commandSend = "BL";
+            else commandSend = "L";
         }else{
             commandSend = "S";
         }
@@ -287,6 +336,8 @@ public class MainPresenter implements MainContract.Presenter {
     public void processOnStatusClick(){ if(model.isConnected()) disconnect(); else view.startPickDeviceActivity(); }
 
     private void processBluetoothMessage(String fullMessage) {
+        view.showMessage(fullMessage); // Hiện thông tin debug
+
         RobotModel robotModel = new RobotModel();
         robotModel.setSquareSize(MAP_SQUARE_SIZE_PX);
         String[] lines = fullMessage.strip().split("\\R");
@@ -318,9 +369,13 @@ public class MainPresenter implements MainContract.Presenter {
             int sonicL = Integer.parseInt(sonicParts[0]);
             int sonicR = Integer.parseInt(sonicParts[1]);
             int sonicF = Integer.parseInt(sonicParts[2]);
-            if (isAutoMode && sonicF > 0 && sonicF < 15) {
-                isAutoMode = false; commandSend = "S"; view.showError("Gặp vật cản! Dừng.");
-            }
+
+            // Cập nhật giá trị cảm biến để loopHandler xử lý
+            this.currentSonicFront = sonicF;
+
+            // [SỬA] Bỏ đoạn logic hủy AutoMode tại đây
+            // Logic chặn xe giờ được chuyển sang loopHandler
+
             robotModel.setSonicValue(new SonicValue(sonicL, sonicR, sonicF));
         } catch (Exception e) {}
         view.updateRobotModel(robotModel);
@@ -332,13 +387,10 @@ public class MainPresenter implements MainContract.Presenter {
 
     public void setIsShowSeekBarGroup(boolean isShow){
         view.setVisibleSeekBarGroup(isShow);
-        isShowSeekBaGroup = isShow; // Cập nhật giá trị biến
+        isShowSeekBaGroup = isShow;
     }
-
-    // [SỬA LỖI 2] Hàm getter giờ đã có biến để return
     public boolean isShowSeekBaGroup() { return isShowSeekBaGroup; }
 
-    public void resetMap(){ resetToKitchen(); }
     private void requestToTurnBluetoothOn(){
         if (view instanceof Context) {
             Context context = (Context) view;
@@ -347,7 +399,6 @@ public class MainPresenter implements MainContract.Presenter {
                 if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
                     // Handle permission
                 }
-                // view.startActivityForResult(requestBT, 1001);
             }
         }
     }
