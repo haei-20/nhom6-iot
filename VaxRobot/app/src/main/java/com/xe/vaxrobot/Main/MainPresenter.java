@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences; // [MỚI]
 import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,11 +13,14 @@ import android.util.Log;
 
 import androidx.core.app.ActivityCompat;
 
+import com.google.gson.Gson; // [MỚI]
+import com.google.gson.reflect.TypeToken; // [MỚI]
 import com.xe.vaxrobot.Model.BluetoothModel;
 import com.xe.vaxrobot.Model.MarkerModel;
 import com.xe.vaxrobot.Model.RobotModel;
 import com.xe.vaxrobot.Model.SonicValue;
 
+import java.lang.reflect.Type; // [MỚI]
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -58,6 +62,9 @@ public class MainPresenter implements MainContract.Presenter {
     private HashMap<String, MarkerModel> savedMarkers = new HashMap<>();
     private String currentStartPoint = "Điểm xuất phát";
 
+    // [MỚI] Tên file lưu trữ
+    private static final String PREFS_NAME = "VaxRobotData";
+
     // Biến Auto Mode
     private boolean isAutoMode = false;
     private Queue<RoutePath> routeQueue = new LinkedList<>();
@@ -79,15 +86,10 @@ public class MainPresenter implements MainContract.Presenter {
     // Biến lưu khoảng cách phía trước
     private int currentSonicFront = 999;
 
-    // [MỚI] Biến hỗ trợ Logic an toàn & Bù đà
+    // Biến an toàn
     private long lastObstacleTime = 0;
     private long resumeStartTime = 0;
-
-    private static final long SAFETY_LOCK_MS = 1000; // Giữ nguyên khóa an toàn 1s
-
-    // [ĐÃ CHỈNH SỬA] Giảm xuống 200ms để tránh đi quá đà (Overshoot)
-    // Nếu xe vẫn đi quá: Giảm xuống 100 hoặc 0
-    // Nếu xe lại dừng non: Tăng lên 300
+    private static final long SAFETY_LOCK_MS = 1000;
     private static final long RESUME_COMPENSATION_MS = 200;
 
     boolean isUp = false, isDown = false, isLeft = false, isRight = false;
@@ -100,6 +102,10 @@ public class MainPresenter implements MainContract.Presenter {
     public void setView(MainContract.View view){
         this.view = view;
         init();
+
+        // [MỚI] Tải dữ liệu cũ ngay khi mở App
+        loadMapData();
+
         handler = new Handler(Looper.getMainLooper());
         loopHandler();
     }
@@ -114,48 +120,92 @@ public class MainPresenter implements MainContract.Presenter {
         }
     }
 
+    // --- [MỚI] HÀM LƯU DỮ LIỆU ---
+    private void saveMapData() {
+        if (view instanceof Context) {
+            Context context = (Context) view;
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences.Editor editor = prefs.edit();
+            Gson gson = new Gson();
+
+            // Lưu danh sách đường đi
+            String jsonRoutes = gson.toJson(savedRoutes);
+            editor.putString("savedRoutes", jsonRoutes);
+
+            // Lưu danh sách điểm mốc
+            String jsonMarkers = gson.toJson(savedMarkers);
+            editor.putString("savedMarkers", jsonMarkers);
+
+            // Lưu vị trí hiện tại (để khi mở lại biết xe đang ở đâu)
+            editor.putString("currentStartPoint", currentStartPoint);
+
+            editor.apply();
+            // Log.d("STORAGE", "Đã lưu dữ liệu!");
+        }
+    }
+
+    // --- [MỚI] HÀM TẢI DỮ LIỆU ---
+    private void loadMapData() {
+        if (view instanceof Context) {
+            Context context = (Context) view;
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            Gson gson = new Gson();
+
+            // Tải Routes
+            String jsonRoutes = prefs.getString("savedRoutes", null);
+            if (jsonRoutes != null) {
+                Type type = new TypeToken<ArrayList<RoutePath>>() {}.getType();
+                savedRoutes = gson.fromJson(jsonRoutes, type);
+            }
+
+            // Tải Markers
+            String jsonMarkers = prefs.getString("savedMarkers", null);
+            if (jsonMarkers != null) {
+                Type type = new TypeToken<HashMap<String, MarkerModel>>() {}.getType();
+                savedMarkers = gson.fromJson(jsonMarkers, type);
+
+                // Cập nhật lên bản đồ ngay khi tải xong
+                if(savedMarkers != null && !savedMarkers.isEmpty()){
+                    view.updateMapMarkers(new ArrayList<>(savedMarkers.values()));
+                }
+            }
+
+            // Tải vị trí cuối cùng
+            String savedStartPoint = prefs.getString("currentStartPoint", null);
+            if(savedStartPoint != null) {
+                currentStartPoint = savedStartPoint;
+            }
+        }
+    }
+
     private void loopHandler(){
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 if (model != null && model.isConnected()) {
-
-                    // Kiểm tra khóa an toàn
                     boolean isSafetyLocked = (System.currentTimeMillis() - lastObstacleTime < SAFETY_LOCK_MS);
 
                     if (isAutoMode) {
-                        // Ngưỡng dừng: < 40cm
                         boolean isBlocked = (currentSonicFront > 0 && currentSonicFront < 40);
-
                         if (isBlocked || isSafetyLocked) {
-                            // TÌNH HUỐNG DỪNG
                             commandSend = "S";
                             if (isBlocked) {
                                 lastObstacleTime = System.currentTimeMillis();
                                 view.toastMessage("Vật cản! Đang chờ...");
                             }
-                            // Reset thời gian bù để lần sau kích hoạt lại
                             resumeStartTime = 0;
-
                         } else {
-                            // TÌNH HUỐNG CHẠY
-                            // Logic Bù Đà (Inertia Compensation)
                             if (resumeStartTime == 0) {
                                 resumeStartTime = System.currentTimeMillis();
                             }
-
                             long timeSinceResume = System.currentTimeMillis() - resumeStartTime;
-
-                            // Chỉ bù trong 200ms đầu tiên khi vừa chạy lại
                             if (timeSinceResume < RESUME_COMPENSATION_MS) {
                                 if (currentReplaySequence != null && replayIndex < currentReplaySequence.size()) {
                                     commandSend = currentReplaySequence.get(replayIndex);
                                 } else {
                                     commandSend = "F";
                                 }
-                                // KHÔNG tăng replayIndex ở đây => Đây chính là đoạn "ăn gian" quãng đường để bù đà
                             } else {
-                                // Hết thời gian bù -> Chạy bình thường và tính tiến độ
                                 processAutoRun();
                             }
                         }
@@ -172,10 +222,9 @@ public class MainPresenter implements MainContract.Presenter {
                     }
                     sendCommand(commandSend);
                 }
-
                 loopHandler();
             }
-        }, 100); // Giữ nguyên 100ms để khớp bản đồ
+        }, 100);
     }
 
     private void processAutoRun() {
@@ -262,6 +311,10 @@ public class MainPresenter implements MainContract.Presenter {
         view.updateMapMarkers(new ArrayList<>(savedMarkers.values()));
 
         view.toastMessage("Đã lưu: " + newRoute.getName());
+
+        // [MỚI] Lưu xuống bộ nhớ ngay sau khi lưu hành trình
+        saveMapData();
+
         currentStartPoint = endPointName;
         currentRecording = new ArrayList<>();
         lastCommandSend = "S";
@@ -275,8 +328,14 @@ public class MainPresenter implements MainContract.Presenter {
         this.currentX = 0;
         this.currentY = 0;
         this.traveledDistance = 0;
+
+        // [MỚI] Reset thì xóa sạch dữ liệu cũ
+        savedRoutes.clear();
+        savedMarkers.clear();
+        saveMapData(); // Lưu trạng thái rỗng
+
         view.resetMap();
-        view.toastMessage("Đã reset tọa độ tại: " + newStartPointName);
+        view.toastMessage("Đã reset bản đồ và dữ liệu!");
     }
 
     @Override
@@ -291,6 +350,10 @@ public class MainPresenter implements MainContract.Presenter {
             }
             savedRoutes.removeAll(routesToRemove);
             view.updateMapMarkers(new ArrayList<>(savedMarkers.values()));
+
+            // [MỚI] Cập nhật lại bộ nhớ sau khi xóa
+            saveMapData();
+
             view.toastMessage("Đã xóa: " + name);
         } else {
             view.showError("Không tìm thấy điểm: " + name);
@@ -425,7 +488,6 @@ public class MainPresenter implements MainContract.Presenter {
 
                             this.currentSonicFront = sonicF;
 
-                            // [PHANH KHẨN CẤP]
                             if (sonicF > 0 && sonicF < 40) {
                                 lastObstacleTime = System.currentTimeMillis();
                                 if (!commandSend.equals("S")) {
