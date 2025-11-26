@@ -108,12 +108,22 @@ public class BluetoothModel {
                         bytes = inputStream.read(buffer);
                         if (bytes > 0) {
                             String incomingMessage = new String(buffer, 0, bytes);
-                            new Handler(Looper.getMainLooper()).post(() -> messageCallBack.onMessageReceived(incomingMessage));
+                            new Handler(Looper.getMainLooper()).post(() -> {
+                                try {
+                                    messageCallBack.onMessageReceived(incomingMessage);
+                                } catch (Exception e) {
+                                    Log.e("BT_Listen", "Error in messageCallBack: " + e.getMessage());
+                                }
+                            });
                         }
                     } else {
                         Thread.sleep(10);
                     }
+                } catch (IOException e) {
+                    Log.e("BT_Listen", "IO Error: " + e.getMessage());
+                    isListening = false;
                 } catch (Exception e) {
+                    Log.e("BT_Listen", "Error: " + e.getMessage());
                     isListening = false;
                 }
             }

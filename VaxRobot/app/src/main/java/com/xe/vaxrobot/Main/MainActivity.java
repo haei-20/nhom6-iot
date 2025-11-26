@@ -272,9 +272,37 @@ public class MainActivity extends AppCompatActivity implements MainContract.View
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_BLUETOOTH_PERMISSIONS) {
+            boolean allGranted = true;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+            if (allGranted) {
+                Toast.makeText(this, "✓ Quyền Bluetooth đã được cấp", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "✗ Vui lòng cấp quyền Bluetooth để kết nối", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
     public void startPickDeviceActivity(){
+        // Kiểm tra quyền trước khi lấy danh sách thiết bị
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Chưa cấp quyền Bluetooth Connect", Toast.LENGTH_SHORT).show();
+                requestBluetoothPermissions();
+                return;
+            }
+        }
+
         deviceList = getPairedDevices();
+        if (deviceList.isEmpty()) {
+            Toast.makeText(this, "Chưa có thiết bị nào được ghép cặp", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         Intent intent = new Intent(this, PickDeviceActivity.class);
         ArrayList<String> deviceNameList = new ArrayList<>();
         for(Pair<String, String> p : deviceList) deviceNameList.add(p.second);
